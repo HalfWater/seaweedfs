@@ -7,6 +7,7 @@ import (
 
 	"github.com/chrislusf/seaweedfs/weed/glog"
 	"github.com/chrislusf/seaweedfs/weed/storage"
+	"github.com/chrislusf/seaweedfs/weed/storage/needle"
 	"github.com/chrislusf/seaweedfs/weed/storage/types"
 )
 
@@ -28,6 +29,32 @@ var (
 	fixVolumeId         = cmdFix.Flag.Int("volumeId", -1, "a volume id. The volume should already exist in the dir. The volume index file should not exist.")
 )
 
+type VolumeFileScanner4Fix struct {
+	version needle.Version
+	nm      *storage.NeedleMap
+}
+
+func (scanner *VolumeFileScanner4Fix) VisitSuperBlock(superBlock storage.SuperBlock) error {
+	scanner.version = superBlock.Version()
+	return nil
+
+}
+func (scanner *VolumeFileScanner4Fix) ReadNeedleBody() bool {
+	return false
+}
+
+func (scanner *VolumeFileScanner4Fix) VisitNeedle(n *needle.Needle, offset int64, needleHeader, needleBody []byte) error {
+	glog.V(2).Infof("key %d offset %d size %d disk_size %d gzip %v", n.Id, offset, n.Size, n.DiskSize(scanner.version), n.IsGzipped())
+	if n.Size > 0 && n.Size != types.TombstoneFileSize {
+		pe := scanner.nm.Put(n.Id, types.ToOffset(offset), n.Size)
+		glog.V(2).Infof("saved %d with error %v", n.Size, pe)
+	} else {
+		glog.V(2).Infof("skipping deleted file ...")
+		return scanner.nm.Delete(n.Id, types.ToOffset(offset))
+	}
+	return nil
+}
+
 func runFix(cmd *Command, args []string) bool {
 
 	if *fixVolumeId == -1 {
@@ -48,24 +75,12 @@ func runFix(cmd *Command, args []string) bool {
 	nm := storage.NewBtreeNeedleMap(indexFile)
 	defer nm.Close()
 
-	var version storage.Version
-	vid := storage.VolumeId(*fixVolumeId)
-	err = storage.ScanVolumeFile(*fixVolumePath, *fixVolumeCollection, vid,
-		storage.NeedleMapInMemory,
-		func(superBlock storage.SuperBlock) error {
-			version = superBlock.Version()
-			return nil
-		}, false, func(n *storage.Needle, offset int64) error {
-			glog.V(2).Infof("key %d offset %d size %d disk_size %d gzip %v", n.Id, offset, n.Size, n.DiskSize(version), n.IsGzipped())
-			if n.Size > 0 {
-				pe := nm.Put(n.Id, types.Offset(offset/types.NeedlePaddingSize), n.Size)
-				glog.V(2).Infof("saved %d with error %v", n.Size, pe)
-			} else {
-				glog.V(2).Infof("skipping deleted file ...")
-				return nm.Delete(n.Id, types.Offset(offset/types.NeedlePaddingSize))
-			}
-			return nil
-		})
+	vid := needle.VolumeId(*fixVolumeId)
+	scanner := &VolumeFileScanner4Fix{
+		nm: nm,
+	}
+
+	err = storage.ScanVolumeFile(*fixVolumePath, *fixVolumeCollection, vid, storage.NeedleMapInMemory, scanner)
 	if err != nil {
 		glog.Fatalf("Export Volume File [ERROR] %s\n", err)
 		os.Remove(indexFileName)

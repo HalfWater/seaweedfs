@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chrislusf/seaweedfs/weed/glog"
 	"github.com/chrislusf/seaweedfs/weed/operation"
 	"github.com/chrislusf/seaweedfs/weed/pb/filer_pb"
-	"sync"
+	"github.com/chrislusf/seaweedfs/weed/security"
 )
 
 type ContinuousDirtyPages struct {
@@ -23,10 +25,21 @@ type ContinuousDirtyPages struct {
 
 func newDirtyPages(file *File) *ContinuousDirtyPages {
 	return &ContinuousDirtyPages{
-		Data: make([]byte, file.wfs.option.ChunkSizeLimit),
+		Data: nil,
 		f:    file,
 	}
 }
+
+func (pages *ContinuousDirtyPages) releaseResource() {
+	if pages.Data != nil {
+		pages.f.wfs.bufPool.Put(pages.Data)
+		pages.Data = nil
+		atomic.AddInt32(&counter, -1)
+		glog.V(3).Infof("%s/%s releasing resource %d", pages.f.dir.Path, pages.f.Name, counter)
+	}
+}
+
+var counter = int32(0)
 
 func (pages *ContinuousDirtyPages) AddPage(ctx context.Context, offset int64, data []byte) (chunks []*filer_pb.FileChunk, err error) {
 
@@ -35,9 +48,15 @@ func (pages *ContinuousDirtyPages) AddPage(ctx context.Context, offset int64, da
 
 	var chunk *filer_pb.FileChunk
 
-	if len(data) > len(pages.Data) {
+	if len(data) > int(pages.f.wfs.option.ChunkSizeLimit) {
 		// this is more than what buffer can hold.
 		return pages.flushAndSave(ctx, offset, data)
+	}
+
+	if pages.Data == nil {
+		pages.Data = pages.f.wfs.bufPool.Get().([]byte)
+		atomic.AddInt32(&counter, 1)
+		glog.V(3).Infof("%s/%s acquire resource %d", pages.f.dir.Path, pages.f.Name, counter)
 	}
 
 	if offset < pages.Offset || offset >= pages.Offset+int64(len(pages.Data)) ||
@@ -71,7 +90,7 @@ func (pages *ContinuousDirtyPages) AddPage(ctx context.Context, offset int64, da
 			copy(pages.Data[pages.Size:], data[pages.Size:])
 		} else {
 			if pages.Size != 0 {
-				glog.V(0).Infof("%s/%s add page: pages [%d, %d) write [%d, %d)", pages.f.dir.Path, pages.f.Name, pages.Offset, pages.Offset+pages.Size, offset, offset+int64(len(data)))
+				glog.V(1).Infof("%s/%s add page: pages [%d, %d) write [%d, %d)", pages.f.dir.Path, pages.f.Name, pages.Offset, pages.Offset+pages.Size, offset, offset+int64(len(data)))
 			}
 			return pages.flushAndSave(ctx, offset, data)
 		}
@@ -91,7 +110,7 @@ func (pages *ContinuousDirtyPages) flushAndSave(ctx context.Context, offset int6
 	// flush existing
 	if chunk, err = pages.saveExistingPagesToStorage(ctx); err == nil {
 		if chunk != nil {
-			glog.V(4).Infof("%s/%s flush existing [%d,%d)", pages.f.dir.Path, pages.f.Name, chunk.Offset, chunk.Offset+int64(chunk.Size))
+			glog.V(4).Infof("%s/%s flush existing [%d,%d) to %s", pages.f.dir.Path, pages.f.Name, chunk.Offset, chunk.Offset+int64(chunk.Size), chunk.FileId)
 			chunks = append(chunks, chunk)
 		}
 	} else {
@@ -104,7 +123,7 @@ func (pages *ContinuousDirtyPages) flushAndSave(ctx context.Context, offset int6
 	// flush the new page
 	if chunk, err = pages.saveToStorage(ctx, data, offset); err == nil {
 		if chunk != nil {
-			glog.V(4).Infof("%s/%s flush big request [%d,%d)", pages.f.dir.Path, pages.f.Name, chunk.Offset, chunk.Offset+int64(chunk.Size))
+			glog.V(4).Infof("%s/%s flush big request [%d,%d) to %s", pages.f.dir.Path, pages.f.Name, chunk.Offset, chunk.Offset+int64(chunk.Size), chunk.FileId)
 			chunks = append(chunks, chunk)
 		}
 	} else {
@@ -146,8 +165,9 @@ func (pages *ContinuousDirtyPages) saveExistingPagesToStorage(ctx context.Contex
 func (pages *ContinuousDirtyPages) saveToStorage(ctx context.Context, buf []byte, offset int64) (*filer_pb.FileChunk, error) {
 
 	var fileId, host string
+	var auth security.EncodedJwt
 
-	if err := pages.f.wfs.withFilerClient(func(client filer_pb.SeaweedFilerClient) error {
+	if err := pages.f.wfs.WithFilerClient(ctx, func(client filer_pb.SeaweedFilerClient) error {
 
 		request := &filer_pb.AssignVolumeRequest{
 			Count:       1,
@@ -163,7 +183,7 @@ func (pages *ContinuousDirtyPages) saveToStorage(ctx context.Context, buf []byte
 			return err
 		}
 
-		fileId, host = resp.FileId, resp.Url
+		fileId, host, auth = resp.FileId, resp.Url, security.EncodedJwt(resp.Auth)
 
 		return nil
 	}); err != nil {
@@ -172,7 +192,7 @@ func (pages *ContinuousDirtyPages) saveToStorage(ctx context.Context, buf []byte
 
 	fileUrl := fmt.Sprintf("http://%s/%s", host, fileId)
 	bufReader := bytes.NewReader(buf)
-	uploadResult, err := operation.Upload(fileUrl, pages.f.Name, bufReader, false, "application/octet-stream", nil, "")
+	uploadResult, err := operation.Upload(fileUrl, pages.f.Name, bufReader, false, "application/octet-stream", nil, auth)
 	if err != nil {
 		glog.V(0).Infof("upload data %v to %s: %v", pages.f.Name, fileUrl, err)
 		return nil, fmt.Errorf("upload data: %v", err)

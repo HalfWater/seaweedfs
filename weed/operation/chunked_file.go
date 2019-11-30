@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"sort"
+
+	"google.golang.org/grpc"
 
 	"sync"
 
@@ -53,7 +56,7 @@ func (s ChunkList) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 func LoadChunkManifest(buffer []byte, isGzipped bool) (*ChunkManifest, error) {
 	if isGzipped {
 		var err error
-		if buffer, err = UnGzipData(buffer); err != nil {
+		if buffer, err = util.UnGzipData(buffer); err != nil {
 			return nil, err
 		}
 	}
@@ -69,17 +72,23 @@ func (cm *ChunkManifest) Marshal() ([]byte, error) {
 	return json.Marshal(cm)
 }
 
-func (cm *ChunkManifest) DeleteChunks(master string) error {
-	deleteError := 0
+func (cm *ChunkManifest) DeleteChunks(master string, grpcDialOption grpc.DialOption) error {
+	var fileIds []string
 	for _, ci := range cm.Chunks {
-		if e := DeleteFile(master, ci.Fid, ""); e != nil {
-			deleteError++
-			glog.V(0).Infof("Delete %s error: %v, master: %s", ci.Fid, e, master)
+		fileIds = append(fileIds, ci.Fid)
+	}
+	results, err := DeleteFiles(master, grpcDialOption, fileIds)
+	if err != nil {
+		glog.V(0).Infof("delete %+v: %v", fileIds, err)
+		return fmt.Errorf("chunk delete: %v", err)
+	}
+	for _, result := range results {
+		if result.Error != "" {
+			glog.V(0).Infof("delete file %+v: %v", result.FileId, result.Error)
+			return fmt.Errorf("chunk delete %v: %v", result.FileId, result.Error)
 		}
 	}
-	if deleteError > 0 {
-		return errors.New("Not all chunks deleted.")
-	}
+
 	return nil
 }
 
@@ -96,7 +105,10 @@ func readChunkNeedle(fileUrl string, w io.Writer, offset int64) (written int64, 
 	if err != nil {
 		return written, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	switch resp.StatusCode {
 	case http.StatusRequestedRangeNotSatisfiable:

@@ -1,30 +1,46 @@
 package weed_server
 
 import (
+	"context"
 	"io"
+	"io/ioutil"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path"
+	"strconv"
 	"strings"
 
 	"github.com/chrislusf/seaweedfs/weed/filer2"
 	"github.com/chrislusf/seaweedfs/weed/glog"
+	"github.com/chrislusf/seaweedfs/weed/stats"
 	"github.com/chrislusf/seaweedfs/weed/util"
-	"mime"
-	"mime/multipart"
-	"path"
-	"strconv"
 )
 
 func (fs *FilerServer) GetOrHeadHandler(w http.ResponseWriter, r *http.Request, isGetMethod bool) {
+
 	path := r.URL.Path
-	if strings.HasSuffix(path, "/") && len(path) > 1 {
+	isForDirectory := strings.HasSuffix(path, "/")
+	if isForDirectory && len(path) > 1 {
 		path = path[:len(path)-1]
 	}
 
-	entry, err := fs.filer.FindEntry(filer2.FullPath(path))
+	entry, err := fs.filer.FindEntry(context.Background(), filer2.FullPath(path))
 	if err != nil {
-		glog.V(1).Infof("Not found %s: %v", path, err)
-		w.WriteHeader(http.StatusNotFound)
+		if path == "/" {
+			fs.listDirectoryHandler(w, r)
+			return
+		}
+		if err == filer2.ErrNotFound {
+			glog.V(1).Infof("Not found %s: %v", path, err)
+			stats.FilerRequestCounter.WithLabelValues("read.notfound").Inc()
+			w.WriteHeader(http.StatusNotFound)
+		} else {
+			glog.V(0).Infof("Internal %s: %v", path, err)
+			stats.FilerRequestCounter.WithLabelValues("read.internalerror").Inc()
+			w.WriteHeader(http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -37,8 +53,14 @@ func (fs *FilerServer) GetOrHeadHandler(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	if isForDirectory {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
 	if len(entry.Chunks) == 0 {
 		glog.V(1).Infof("no file chunks for %s, attr=%+v", path, entry.Attr)
+		stats.FilerRequestCounter.WithLabelValues("read.nocontent").Inc()
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -46,6 +68,8 @@ func (fs *FilerServer) GetOrHeadHandler(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Accept-Ranges", "bytes")
 	if r.Method == "HEAD" {
 		w.Header().Set("Content-Length", strconv.FormatInt(int64(filer2.TotalSize(entry.Chunks)), 10))
+		w.Header().Set("Last-Modified", entry.Attr.Mtime.Format(http.TimeFormat))
+		setEtag(w, filer2.ETag(entry.Chunks))
 		return
 	}
 
@@ -60,7 +84,7 @@ func (fs *FilerServer) GetOrHeadHandler(w http.ResponseWriter, r *http.Request, 
 
 func (fs *FilerServer) handleSingleChunk(w http.ResponseWriter, r *http.Request, entry *filer2.Entry) {
 
-	fileId := entry.Chunks[0].FileId
+	fileId := entry.Chunks[0].GetFileIdString()
 
 	urlString, err := fs.filer.MasterClient.LookupFileId(fileId)
 	if err != nil {
@@ -70,6 +94,7 @@ func (fs *FilerServer) handleSingleChunk(w http.ResponseWriter, r *http.Request,
 	}
 
 	if fs.option.RedirectOnRead {
+		stats.FilerRequestCounter.WithLabelValues("redirect").Inc()
 		http.Redirect(w, r, urlString, http.StatusFound)
 		return
 	}
@@ -100,9 +125,15 @@ func (fs *FilerServer) handleSingleChunk(w http.ResponseWriter, r *http.Request,
 		writeJsonError(w, r, http.StatusInternalServerError, do_err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 	for k, v := range resp.Header {
 		w.Header()[k] = v
+	}
+	if entry.Attr.Mime != "" {
+		w.Header().Set("Content-Type", entry.Attr.Mime)
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
@@ -110,7 +141,7 @@ func (fs *FilerServer) handleSingleChunk(w http.ResponseWriter, r *http.Request,
 
 func (fs *FilerServer) handleMultipleChunks(w http.ResponseWriter, r *http.Request, entry *filer2.Entry) {
 
-	mimeType := entry.Mime
+	mimeType := entry.Attr.Mime
 	if mimeType == "" {
 		if ext := path.Ext(entry.Name()); ext != "" {
 			mimeType = mime.TypeByExtension(ext)
@@ -217,31 +248,6 @@ func (fs *FilerServer) handleMultipleChunks(w http.ResponseWriter, r *http.Reque
 
 func (fs *FilerServer) writeContent(w io.Writer, entry *filer2.Entry, offset int64, size int) error {
 
-	chunkViews := filer2.ViewFromChunks(entry.Chunks, offset, size)
-
-	fileId2Url := make(map[string]string)
-
-	for _, chunkView := range chunkViews {
-
-		urlString, err := fs.filer.MasterClient.LookupFileId(chunkView.FileId)
-		if err != nil {
-			glog.V(1).Infof("operation LookupFileId %s failed, err: %v", chunkView.FileId, err)
-			return err
-		}
-		fileId2Url[chunkView.FileId] = urlString
-	}
-
-	for _, chunkView := range chunkViews {
-		urlString := fileId2Url[chunkView.FileId]
-		_, err := util.ReadUrlAsStream(urlString, chunkView.Offset, int(chunkView.Size), func(data []byte) {
-			w.Write(data)
-		})
-		if err != nil {
-			glog.V(1).Infof("read %s failed, err: %v", chunkView.FileId, err)
-			return err
-		}
-	}
-
-	return nil
+	return filer2.StreamContent(fs.filer.MasterClient, w, entry.Chunks, offset, size)
 
 }

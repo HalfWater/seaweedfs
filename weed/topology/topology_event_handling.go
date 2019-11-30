@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"google.golang.org/grpc"
 	"math/rand"
 	"time"
 
@@ -8,7 +9,7 @@ import (
 	"github.com/chrislusf/seaweedfs/weed/storage"
 )
 
-func (t *Topology) StartRefreshWritableVolumes(garbageThreshold string, preallocate int64) {
+func (t *Topology) StartRefreshWritableVolumes(grpcDialOption grpc.DialOption, garbageThreshold float64, preallocate int64) {
 	go func() {
 		for {
 			if t.IsLeader() {
@@ -18,11 +19,11 @@ func (t *Topology) StartRefreshWritableVolumes(garbageThreshold string, prealloc
 			time.Sleep(time.Duration(float32(t.pulse*1e3)*(1+rand.Float32())) * time.Millisecond)
 		}
 	}()
-	go func(garbageThreshold string) {
+	go func(garbageThreshold float64) {
 		c := time.Tick(15 * time.Minute)
 		for _ = range c {
 			if t.IsLeader() {
-				t.Vacuum(garbageThreshold, preallocate)
+				t.Vacuum(grpcDialOption, garbageThreshold, preallocate)
 			}
 		}
 	}(garbageThreshold)
@@ -40,6 +41,10 @@ func (t *Topology) SetVolumeCapacityFull(volumeInfo storage.VolumeInfo) bool {
 	if !vl.SetVolumeCapacityFull(volumeInfo.Id) {
 		return false
 	}
+
+	vl.accessLock.RLock()
+	defer vl.accessLock.RUnlock()
+
 	for _, dn := range vl.vid2location[volumeInfo.Id].list {
 		if !volumeInfo.ReadOnly {
 			dn.UpAdjustActiveVolumeCountDelta(-1)

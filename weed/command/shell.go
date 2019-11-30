@@ -1,61 +1,47 @@
 package command
 
 import (
-	"bufio"
 	"fmt"
-	"os"
 
-	"github.com/chrislusf/seaweedfs/weed/glog"
+	"github.com/chrislusf/seaweedfs/weed/security"
+	"github.com/chrislusf/seaweedfs/weed/shell"
+	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/spf13/viper"
+)
+
+var (
+	shellOptions         shell.ShellOptions
+	shellInitialFilerUrl *string
 )
 
 func init() {
 	cmdShell.Run = runShell // break init cycle
+	shellOptions.Masters = cmdShell.Flag.String("master", "localhost:9333", "comma-separated master servers")
+	shellInitialFilerUrl = cmdShell.Flag.String("filer.url", "http://localhost:8888/", "initial filer url")
 }
 
 var cmdShell = &Command{
 	UsageLine: "shell",
-	Short:     "run interactive commands, now just echo",
-	Long: `run interactive commands.
+	Short:     "run interactive administrative commands",
+	Long: `run interactive administrative commands.
 
   `,
 }
 
-var ()
-
 func runShell(command *Command, args []string) bool {
-	r := bufio.NewReader(os.Stdin)
-	o := bufio.NewWriter(os.Stdout)
-	e := bufio.NewWriter(os.Stderr)
-	prompt := func() {
-		var err error
-		if _, err = o.WriteString("> "); err != nil {
-			glog.V(0).Infoln("error writing to stdout:", err)
-		}
-		if err = o.Flush(); err != nil {
-			glog.V(0).Infoln("error flushing stdout:", err)
-		}
-	}
-	readLine := func() string {
-		ret, err := r.ReadString('\n')
-		if err != nil {
-			fmt.Fprint(e, err)
-			os.Exit(1)
-		}
-		return ret
-	}
-	execCmd := func(cmd string) int {
-		if cmd != "" {
-			if _, err := o.WriteString(cmd); err != nil {
-				glog.V(0).Infoln("error writing to stdout:", err)
-			}
-		}
-		return 0
+
+	util.LoadConfiguration("security", false)
+	shellOptions.GrpcDialOption = security.LoadClientTLS(viper.Sub("grpc"), "client")
+
+	var filerPwdErr error
+	shellOptions.FilerHost, shellOptions.FilerPort, shellOptions.Directory, filerPwdErr = util.ParseFilerUrl(*shellInitialFilerUrl)
+	if filerPwdErr != nil {
+		fmt.Printf("failed to parse url filer.url=%s : %v\n", *shellInitialFilerUrl, filerPwdErr)
+		return false
 	}
 
-	cmd := ""
-	for {
-		prompt()
-		cmd = readLine()
-		execCmd(cmd)
-	}
+	shell.RunShell(shellOptions)
+
+	return true
+
 }

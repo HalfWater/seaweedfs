@@ -37,6 +37,9 @@ func (k *KafkaQueue) initialize(hosts []string, topic string) (err error) {
 	config.Producer.Return.Successes = true
 	config.Producer.Return.Errors = true
 	k.producer, err = sarama.NewAsyncProducer(hosts, config)
+	if err != nil {
+		return err
+	}
 	k.topic = topic
 	go k.handleSuccess()
 	go k.handleError()
@@ -73,7 +76,7 @@ func (k *KafkaQueue) handleError() {
 	for {
 		err := <-k.producer.Errors()
 		if err != nil {
-			glog.Errorf("producer message error, partition:%d offset:%d key:%v valus:%s error(%v) topic:%s", err.Msg.Partition, err.Msg.Offset, err.Msg.Key, err.Msg.Value, err.Err, k.topic)
+			glog.Errorf("producer message error, partition:%d offset:%d key:%v value:%s error(%v) topic:%s", err.Msg.Partition, err.Msg.Offset, err.Msg.Key, err.Msg.Value, err.Err, k.topic)
 		}
 	}
 }

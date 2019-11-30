@@ -22,10 +22,9 @@ var StatusTpl = template.Must(template.New("status").Funcs(funcMap).Parse(`<!DOC
 <html>
   <head>
     <title>SeaweedFS {{ .Version }}</title>
-	<link rel="icon" href="http://7viirv.com1.z0.glb.clouddn.com/seaweed_favicon.png" sizes="32x32" />  
-    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.1/css/bootstrap.min.css">
-	<script type="text/javascript" src="https://code.jquery.com/jquery-2.1.3.min.js"></script>
-	<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/jquery-sparklines/2.1.2/jquery.sparkline.min.js"></script>
+	<link rel="stylesheet" href="/seaweedfsstatic/bootstrap/3.3.1/css/bootstrap.min.css">
+	<script type="text/javascript" src="/seaweedfsstatic/javascript/jquery-2.1.3.min.js"></script>
+	<script type="text/javascript" src="/seaweedfsstatic/javascript/jquery-sparklines/2.1.2/jquery.sparkline.min.js"></script>
     <script type="text/javascript">
     $(function() {
 		var periods = ['second', 'minute', 'hour', 'day'];
@@ -50,7 +49,7 @@ var StatusTpl = template.Must(template.New("status").Funcs(funcMap).Parse(`<!DOC
     <div class="container">
       <div class="page-header">
 	    <h1>
-	      <img src="http://7viirv.com1.z0.glb.clouddn.com/seaweed50x50.png"></img>
+          <a href="https://github.com/chrislusf/seaweedfs"><img src="/seaweedfsstatic/seaweed50x50.png"></img></a>
           SeaweedFS <small>{{ .Version }}</small>
 	    </h1>
       </div>
@@ -123,6 +122,32 @@ var StatusTpl = template.Must(template.New("status").Funcs(funcMap).Parse(`<!DOC
               <td>{{ .FileCount }}</td>
               <td>{{ .DeleteCount }} / {{.DeletedByteCount}} Bytes</td>
               <td>{{ .Ttl }}</td>
+            </tr>
+          {{ end }}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="row">
+        <h2>Erasure Coding Shards</h2>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Id</th>
+              <th>Collection</th>
+              <th>Shard Size</th>
+              <th>Shards</th>
+              <th>CreatedAt</th>
+            </tr>
+          </thead>
+          <tbody>
+          {{ range .EcVolumes }}
+            <tr>
+              <td><code>{{ .VolumeId }}</code></td>
+              <td>{{ .Collection }}</td>
+              <td>{{ .ShardSize }} Bytes</td>
+              <td>{{ .ShardIdList }}</td>
+              <td>{{ .CreatedAt.Format "02 Jan 06 15:04 -0700" }}</td>
             </tr>
           {{ end }}
           </tbody>

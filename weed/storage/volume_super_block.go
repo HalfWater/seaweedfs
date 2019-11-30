@@ -6,6 +6,8 @@ import (
 
 	"github.com/chrislusf/seaweedfs/weed/glog"
 	"github.com/chrislusf/seaweedfs/weed/pb/master_pb"
+	"github.com/chrislusf/seaweedfs/weed/storage/backend"
+	"github.com/chrislusf/seaweedfs/weed/storage/needle"
 	"github.com/chrislusf/seaweedfs/weed/util"
 	"github.com/golang/protobuf/proto"
 )
@@ -23,23 +25,23 @@ const (
 * Rest bytes: Reserved
  */
 type SuperBlock struct {
-	version          Version
-	ReplicaPlacement *ReplicaPlacement
-	Ttl              *TTL
-	CompactRevision  uint16
-	Extra            *master_pb.SuperBlockExtra
-	extraSize        uint16
+	version            needle.Version
+	ReplicaPlacement   *ReplicaPlacement
+	Ttl                *needle.TTL
+	CompactionRevision uint16
+	Extra              *master_pb.SuperBlockExtra
+	extraSize          uint16
 }
 
 func (s *SuperBlock) BlockSize() int {
 	switch s.version {
-	case Version2, Version3:
+	case needle.Version2, needle.Version3:
 		return _SuperBlockSize + int(s.extraSize)
 	}
 	return _SuperBlockSize
 }
 
-func (s *SuperBlock) Version() Version {
+func (s *SuperBlock) Version() needle.Version {
 	return s.version
 }
 func (s *SuperBlock) Bytes() []byte {
@@ -47,7 +49,7 @@ func (s *SuperBlock) Bytes() []byte {
 	header[0] = byte(s.version)
 	header[1] = s.ReplicaPlacement.Byte()
 	s.Ttl.ToBytes(header[2:4])
-	util.Uint16toBytes(header[4:6], s.CompactRevision)
+	util.Uint16toBytes(header[4:6], s.CompactionRevision)
 
 	if s.Extra != nil {
 		extraData, err := proto.Marshal(s.Extra)
@@ -68,19 +70,26 @@ func (s *SuperBlock) Bytes() []byte {
 	return header
 }
 
+func (s *SuperBlock) Initialized() bool {
+	return s.ReplicaPlacement != nil && s.Ttl != nil
+}
+
 func (v *Volume) maybeWriteSuperBlock() error {
-	stat, e := v.dataFile.Stat()
+
+	datSize, _, e := v.DataBackend.GetStat()
 	if e != nil {
-		glog.V(0).Infof("failed to stat datafile %s: %v", v.dataFile.Name(), e)
+		glog.V(0).Infof("failed to stat datafile %s: %v", v.DataBackend.String(), e)
 		return e
 	}
-	if stat.Size() == 0 {
-		v.SuperBlock.version = CurrentVersion
-		_, e = v.dataFile.Write(v.SuperBlock.Bytes())
+	if datSize == 0 {
+		v.SuperBlock.version = needle.CurrentVersion
+		_, e = v.DataBackend.WriteAt(v.SuperBlock.Bytes(), 0)
 		if e != nil && os.IsPermission(e) {
 			//read-only, but zero length - recreate it!
-			if v.dataFile, e = os.Create(v.dataFile.Name()); e == nil {
-				if _, e = v.dataFile.Write(v.SuperBlock.Bytes()); e == nil {
+			var dataFile *os.File
+			if dataFile, e = os.Create(v.DataBackend.String()); e == nil {
+				v.DataBackend = backend.NewDiskFile(dataFile)
+				if _, e = v.DataBackend.WriteAt(v.SuperBlock.Bytes(), 0); e == nil {
 					v.readOnly = false
 				}
 			}
@@ -90,28 +99,26 @@ func (v *Volume) maybeWriteSuperBlock() error {
 }
 
 func (v *Volume) readSuperBlock() (err error) {
-	v.SuperBlock, err = ReadSuperBlock(v.dataFile)
+	v.SuperBlock, err = ReadSuperBlock(v.DataBackend)
 	return err
 }
 
 // ReadSuperBlock reads from data file and load it into volume's super block
-func ReadSuperBlock(dataFile *os.File) (superBlock SuperBlock, err error) {
-	if _, err = dataFile.Seek(0, 0); err != nil {
-		err = fmt.Errorf("cannot seek to the beginning of %s: %v", dataFile.Name(), err)
-		return
-	}
+func ReadSuperBlock(datBackend backend.BackendStorageFile) (superBlock SuperBlock, err error) {
+
 	header := make([]byte, _SuperBlockSize)
-	if _, e := dataFile.Read(header); e != nil {
-		err = fmt.Errorf("cannot read volume %s super block: %v", dataFile.Name(), e)
+	if _, e := datBackend.ReadAt(header, 0); e != nil {
+		err = fmt.Errorf("cannot read volume %s super block: %v", datBackend.String(), e)
 		return
 	}
-	superBlock.version = Version(header[0])
+
+	superBlock.version = needle.Version(header[0])
 	if superBlock.ReplicaPlacement, err = NewReplicaPlacementFromByte(header[1]); err != nil {
 		err = fmt.Errorf("cannot read replica type: %s", err.Error())
 		return
 	}
-	superBlock.Ttl = LoadTTLFromBytes(header[2:4])
-	superBlock.CompactRevision = util.BytesToUint16(header[4:6])
+	superBlock.Ttl = needle.LoadTTLFromBytes(header[2:4])
+	superBlock.CompactionRevision = util.BytesToUint16(header[4:6])
 	superBlock.extraSize = util.BytesToUint16(header[6:8])
 
 	if superBlock.extraSize > 0 {
@@ -120,7 +127,7 @@ func ReadSuperBlock(dataFile *os.File) (superBlock SuperBlock, err error) {
 		superBlock.Extra = &master_pb.SuperBlockExtra{}
 		err = proto.Unmarshal(extraData, superBlock.Extra)
 		if err != nil {
-			err = fmt.Errorf("cannot read volume %s super block extra: %v", dataFile.Name(), err)
+			err = fmt.Errorf("cannot read volume %s super block extra: %v", datBackend.String(), err)
 			return
 		}
 	}

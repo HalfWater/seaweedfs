@@ -20,26 +20,20 @@ func (f *Filer) NotifyUpdateEvent(oldEntry, newEntry *Entry, deleteChunks bool) 
 
 		glog.V(3).Infof("notifying entry update %v", key)
 
+		newParentPath := ""
+		if newEntry != nil {
+			newParentPath, _ = newEntry.FullPath.DirAndName()
+		}
+
 		notification.Queue.SendMessage(
 			key,
 			&filer_pb.EventNotification{
-				OldEntry:     toProtoEntry(oldEntry),
-				NewEntry:     toProtoEntry(newEntry),
-				DeleteChunks: deleteChunks,
+				OldEntry:      oldEntry.ToProtoEntry(),
+				NewEntry:      newEntry.ToProtoEntry(),
+				DeleteChunks:  deleteChunks,
+				NewParentPath: newParentPath,
 			},
 		)
 
-	}
-}
-
-func toProtoEntry(entry *Entry) *filer_pb.Entry {
-	if entry == nil {
-		return nil
-	}
-	return &filer_pb.Entry{
-		Name:        string(entry.FullPath),
-		IsDirectory: entry.IsDirectory(),
-		Attributes:  EntryAttributeToPb(entry),
-		Chunks:      entry.Chunks,
 	}
 }

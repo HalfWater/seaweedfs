@@ -13,8 +13,7 @@ var StatusTpl = template.Must(template.New("status").Funcs(funcMap).Parse(`<!DOC
 <html>
 <head>
 	<title>SeaweedFS Filer</title>
-	<link rel="icon" href="http://7viirv.com1.z0.glb.clouddn.com/seaweed_favicon.png" sizes="32x32" />
-	<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.1/css/bootstrap.min.css">
+	<link rel="stylesheet" href="/seaweedfsstatic/bootstrap/3.3.1/css/bootstrap.min.css">
 <style>
 #drop-area {
   border: 1px transparent;
@@ -44,7 +43,7 @@ var StatusTpl = template.Must(template.New("status").Funcs(funcMap).Parse(`<!DOC
 	<div class="container">
 		<div class="page-header">
 			<h1>
-				<img src="http://7viirv.com1.z0.glb.clouddn.com/seaweed50x50.png"></img>
+				<a href="https://github.com/chrislusf/seaweedfs"><img src="/seaweedfsstatic/seaweed50x50.png"></img></a>
 				SeaweedFS Filer
 			</h1>
 		</div>
@@ -69,7 +68,7 @@ var StatusTpl = template.Must(template.New("status").Funcs(funcMap).Parse(`<!DOC
 				<tr>
 					<td>
 					{{if $entry.IsDirectory}}
-						<img src="https://www.w3.org/TR/WWWicn/folder.gif" width="20" height="23">
+						<img src="/seaweedfsstatic/images/folder.gif" width="20" height="23">
 						<a href={{ print $path  "/" $entry.Name  "/"}} >
 							{{ $entry.Name }}
 						</a>
@@ -163,7 +162,7 @@ function uploadFile(file, i) {
   var url = window.location.href
   var xhr = new XMLHttpRequest()
   var formData = new FormData()
-  xhr.open('POST', url, true)
+  xhr.open('POST', url, false)
 
   formData.append('file', file)
   xhr.send(formData)

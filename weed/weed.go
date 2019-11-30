@@ -1,3 +1,6 @@
+//go:generate statik -src=./static
+// install this first "go get github.com/rakyll/statik"
+
 package main
 
 import (
@@ -18,7 +21,6 @@ import (
 )
 
 var IsDebug *bool
-var server *string
 
 var commands = command.Commands
 

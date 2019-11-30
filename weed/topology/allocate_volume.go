@@ -1,36 +1,31 @@
 package topology
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"net/url"
+	"context"
 
-	"github.com/chrislusf/seaweedfs/weed/storage"
-	"github.com/chrislusf/seaweedfs/weed/util"
+	"github.com/chrislusf/seaweedfs/weed/operation"
+	"github.com/chrislusf/seaweedfs/weed/pb/volume_server_pb"
+	"github.com/chrislusf/seaweedfs/weed/storage/needle"
+	"google.golang.org/grpc"
 )
 
 type AllocateVolumeResult struct {
 	Error string
 }
 
-func AllocateVolume(dn *DataNode, vid storage.VolumeId, option *VolumeGrowOption) error {
-	values := make(url.Values)
-	values.Add("volume", vid.String())
-	values.Add("collection", option.Collection)
-	values.Add("replication", option.ReplicaPlacement.String())
-	values.Add("ttl", option.Ttl.String())
-	values.Add("preallocate", fmt.Sprintf("%d", option.Prealloacte))
-	jsonBlob, err := util.Post("http://"+dn.Url()+"/admin/assign_volume", values)
-	if err != nil {
-		return err
-	}
-	var ret AllocateVolumeResult
-	if err := json.Unmarshal(jsonBlob, &ret); err != nil {
-		return fmt.Errorf("Invalid JSON result for %s: %s", "/admin/assign_volum", string(jsonBlob))
-	}
-	if ret.Error != "" {
-		return errors.New(ret.Error)
-	}
-	return nil
+func AllocateVolume(dn *DataNode, grpcDialOption grpc.DialOption, vid needle.VolumeId, option *VolumeGrowOption) error {
+
+	return operation.WithVolumeServerClient(dn.Url(), grpcDialOption, func(client volume_server_pb.VolumeServerClient) error {
+
+		_, deleteErr := client.AllocateVolume(context.Background(), &volume_server_pb.AllocateVolumeRequest{
+			VolumeId:           uint32(vid),
+			Collection:         option.Collection,
+			Replication:        option.ReplicaPlacement.String(),
+			Ttl:                option.Ttl.String(),
+			Preallocate:        option.Prealloacte,
+			MemoryMapMaxSizeMb: option.MemoryMapMaxSizeMb,
+		})
+		return deleteErr
+	})
+
 }
